@@ -120,7 +120,7 @@ const seedDB = async () => {
     // Create Admins
     const admin1 = await User.create({
       name: 'Admin Kumar',
-      email: 'admin1@lifelink.com',
+      email: 'admin1@rakthadan.com',
       phone: '+91 9999900001',
       password: 'password123',
       role: 'admin',
@@ -128,7 +128,7 @@ const seedDB = async () => {
 
     const admin2 = await User.create({
       name: 'Admin Reddy',
-      email: 'admin2@lifelink.com',
+      email: 'admin2@rakthadan.com',
       phone: '+91 9999900002',
       password: 'password123',
       role: 'admin',
@@ -136,7 +136,7 @@ const seedDB = async () => {
 
     const admin3 = await User.create({
       name: 'Admin Sharma',
-      email: 'admin3@lifelink.com',
+      email: 'admin3@rakthadan.com',
       phone: '+91 9999900003',
       password: 'password123',
       role: 'admin',
@@ -146,7 +146,7 @@ const seedDB = async () => {
     // Create Super Admin
     await User.create({
       name: 'Super Admin',
-      email: 'superadmin@lifelink.com',
+      email: 'superadmin@rakthadan.com',
       phone: '+91 9999999999',
       password: 'password123',
       role: 'superadmin',
