@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Reward = require('../models/Reward');
+const sendEmail = require('../utils/sendEmail');
 
 // Generate JWT Access Token (Short-lived: 15 minutes)
 const generateToken = (id) => {
@@ -68,12 +69,19 @@ exports.register = async (req, res, next) => {
 // @desc    Verify OTP
 // @route   POST /api/auth/verify-otp
 // @access  Public
+// @desc    Verify OTP
+// @route   POST /api/auth/verify-otp
+// @access  Public
 exports.verifyOtp = async (req, res, next) => {
   try {
     const { email, otp } = req.body;
-    // For demo/development purposes, any OTP code '1234' is accepted.
-    if (otp !== '1234') {
-      return res.status(400).json({ success: false, message: 'Invalid OTP code. Please use 1234.' });
+    const user = await User.findOne({ email });
+
+    // Allow demo OTP '1234' OR real generated OTP
+    const isOtpValid = otp === '1234' || (user && user.otp && user.otp === otp && user.otpExpire && user.otpExpire > Date.now());
+
+    if (!isOtpValid) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
     }
 
     res.status(200).json({
@@ -146,15 +154,43 @@ exports.login = async (req, res, next) => {
 exports.forgotPassword = async (req, res, next) => {
   try {
     const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'Please provide an email address' });
+    }
+
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found with this email' });
     }
 
-    res.status(200).json({
-      success: true,
-      message: 'Password reset OTP sent to your registered email (Use code: 1234).',
-    });
+    // Generate 4-digit numeric OTP code
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    const otpExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+
+    user.otp = otp;
+    user.otpExpire = otpExpire;
+    await user.save({ validateBeforeSave: false });
+
+    // Send real email via Nodemailer
+    try {
+      await sendEmail({
+        email: user.email,
+        subject: 'RakthaDan - Password Reset OTP Code',
+        otp,
+        message: `Your OTP for resetting your RakthaDan account password is: ${otp}. It will expire in 10 minutes.`,
+      });
+
+      res.status(200).json({
+        success: true,
+        message: `Password reset OTP code has been sent to ${user.email}.`,
+      });
+    } catch (emailErr) {
+      console.error('Failed to send email:', emailErr);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send OTP email. Please verify SMTP credentials in .env file.',
+      });
+    }
   } catch (error) {
     next(error);
   }
@@ -166,18 +202,22 @@ exports.forgotPassword = async (req, res, next) => {
 exports.resetPassword = async (req, res, next) => {
   try {
     const { email, password, otp } = req.body;
-
-    if (otp !== '1234') {
-      return res.status(400).json({ success: false, message: 'Invalid OTP code. Please use 1234.' });
-    }
-
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email }).select('+password');
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Hash & Update Password
+    // Allow demo OTP '1234' OR real generated OTP
+    const isOtpValid = otp === '1234' || (user.otp && user.otp === otp && user.otpExpire && user.otpExpire > Date.now());
+
+    if (!isOtpValid) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
+    }
+
+    // Hash & Update Password via pre('save') hook
     user.password = password;
+    user.otp = null;
+    user.otpExpire = null;
     await user.save();
 
     res.status(200).json({
