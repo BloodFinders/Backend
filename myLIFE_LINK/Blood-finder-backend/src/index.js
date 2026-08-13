@@ -8,6 +8,15 @@ const dotenv = require('dotenv');
 // Load env vars
 dotenv.config();
 
+// ── Critical env validation — crash early rather than silently use insecure defaults
+const REQUIRED_ENV = ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'MONGO_URI'];
+const missingEnv = REQUIRED_ENV.filter((key) => !process.env[key]);
+if (missingEnv.length > 0) {
+  console.error(`FATAL: Missing required environment variables: ${missingEnv.join(', ')}`);
+  console.error('Please ensure your .env file is present and contains all required keys.');
+  process.exit(1);
+}
+
 // DB Connection
 const connectDB = require('./config/db');
 connectDB();
@@ -27,11 +36,30 @@ const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 
-// Body parser
-app.use(express.json());
+// Body parser — 10kb limit to prevent DoS via oversized payloads
+app.use(express.json({ limit: '10kb' }));
 
-// Enable CORS
-app.use(cors());
+// Enable CORS — restrict to known origins only
+const allowedOrigins = [
+  // Add your production admin web dashboard URL here when deployed:
+  // 'https://admin.rakthadan.com',
+  'http://localhost:3000',       // Local web admin dev
+  'http://localhost:19006',      // Expo web
+  'http://192.168.1.19:8081',    // Expo Go local (dev only)
+];
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (e.g., mobile apps, Postman, curl)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS policy: origin '${origin}' is not allowed`));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Bypass-Tunnel-Remainder', 'bypass-tunnel-reminder'],
+  credentials: true,
+}));
 
 // Set security headers
 app.use(helmet());
@@ -79,9 +107,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running in ${process.env.NODE_ENV || 'development'} mode on http://0.0.0.0:${PORT}`);
 });
 
-// Handle unhandled promise rejections (prevent crash)
+// Handle unhandled promise rejections (prevent corrupt state)
 process.on('unhandledRejection', (err, promise) => {
   console.error(`Unhandled Rejection Error: ${err.message}`);
-  // Close server & exit process
-  // server.close(() => process.exit(1));
+  // Close server & exit — process manager (PM2) will restart cleanly
+  server.close(() => process.exit(1));
 });

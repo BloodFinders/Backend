@@ -93,7 +93,7 @@ exports.updateRequestStatus = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Invalid status' });
     }
 
-    const request = await BloodRequest.findById(req.id || req.params.id);
+    const request = await BloodRequest.findById(req.params.id);
     if (!request) {
       return res.status(404).json({ success: false, message: 'Blood request not found' });
     }

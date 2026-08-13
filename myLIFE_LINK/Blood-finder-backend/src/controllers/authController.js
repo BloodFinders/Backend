@@ -1,18 +1,22 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const User = require('../models/User');
 const Reward = require('../models/Reward');
 const sendEmail = require('../utils/sendEmail');
 
+// Hash a token with SHA-256 (for safe DB storage)
+const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
 // Generate JWT Access Token (Short-lived: 15 minutes)
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET || 'supersecretlifelinkkey123', {
+  return jwt.sign({ id }, process.env.JWT_SECRET, {
     expiresIn: '15m',
   });
 };
 
 // Generate JWT Refresh Token (Long-lived: 7 days)
 const generateRefreshToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_REFRESH_SECRET || 'supersecretlifelinkrefreshkey98765', {
+  return jwt.sign({ id }, process.env.JWT_REFRESH_SECRET, {
     expiresIn: '7d',
   });
 };
@@ -106,10 +110,41 @@ exports.login = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
+    // ── Account lockout check ────────────────────────────────────────
+    const LOCK_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+    const MAX_ATTEMPTS = 5;
+
+    if (user.lockUntil && user.lockUntil > Date.now()) {
+      const minutesLeft = Math.ceil((user.lockUntil - Date.now()) / 60000);
+      return res.status(429).json({
+        success: false,
+        message: `Account locked due to too many failed attempts. Try again in ${minutesLeft} minute(s).`,
+      });
+    }
+
     // Check password
     const isMatch = await user.matchPassword(password);
     if (!isMatch) {
+      // Increment failed attempts
+      user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+
+      if (user.failedLoginAttempts >= MAX_ATTEMPTS) {
+        user.lockUntil = new Date(Date.now() + LOCK_DURATION_MS);
+        await user.save({ validateBeforeSave: false });
+        return res.status(429).json({
+          success: false,
+          message: `Too many failed attempts. Account locked for 15 minutes.`,
+        });
+      }
+
+      await user.save({ validateBeforeSave: false });
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+
+    // ── Successful login: reset lockout counters ─────────────────────
+    if (user.failedLoginAttempts > 0 || user.lockUntil) {
+      user.failedLoginAttempts = 0;
+      user.lockUntil = null;
     }
 
     if (user.status === 'Inactive') {
@@ -119,8 +154,8 @@ exports.login = async (req, res, next) => {
     const accessToken = generateToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
-    // Save refresh token in database
-    user.refreshToken = refreshToken;
+    // Save hashed refresh token in database (raw token returned to client only)
+    user.refreshToken = hashToken(refreshToken);
     await user.save();
 
     res.status(200).json({
@@ -147,6 +182,7 @@ exports.login = async (req, res, next) => {
     next(error);
   }
 };
+
 
 // @desc    Forgot Password
 // @route   POST /api/auth/forgot-password
@@ -320,7 +356,7 @@ exports.refresh = async (req, res, next) => {
     // Verify refresh token
     let decoded;
     try {
-      decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'supersecretlifelinkrefreshkey98765');
+      decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
     } catch (err) {
       return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
     }
@@ -331,8 +367,8 @@ exports.refresh = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'User not found' });
     }
 
-    // Check if the refresh token matches the one in DB
-    if (user.refreshToken !== refreshToken) {
+    // Check if the hashed incoming token matches the stored hash
+    if (user.refreshToken !== hashToken(refreshToken)) {
       return res.status(401).json({ success: false, message: 'Invalid refresh token' });
     }
 
@@ -340,8 +376,8 @@ exports.refresh = async (req, res, next) => {
     const newAccessToken = generateToken(user._id);
     const newRefreshToken = generateRefreshToken(user._id);
 
-    // Save new refresh token in DB
-    user.refreshToken = newRefreshToken;
+    // Save new hashed refresh token in DB
+    user.refreshToken = hashToken(newRefreshToken);
     await user.save();
 
     res.status(200).json({
