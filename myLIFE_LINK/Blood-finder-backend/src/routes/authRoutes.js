@@ -19,7 +19,8 @@ router.post(
   [
     body('fullName', 'Full Name is required').notEmpty(),
     body('email', 'Please provide a valid email').isEmail(),
-    body('phone', 'Phone number is required').notEmpty(),
+    body('phone', 'Phone number is required').notEmpty()
+      .matches(/^[0-9]{10}$/).withMessage('Phone must be exactly 10 digits'),
     body('password', 'Password must be at least 6 characters').isLength({ min: 6 }),
   ],
   validate,
