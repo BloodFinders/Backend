@@ -26,7 +26,15 @@ router.route('/verify')
   .post(
     protect,
     [
-      body('bloodBank', 'Blood bank name is required').notEmpty(),
+      body('bloodBank', 'Blood bank name is required')
+        .notEmpty()
+        .isString()
+        .isLength({ max: 200 }).withMessage('Blood bank name must not exceed 200 characters')
+        .trim(),
+      body('date', 'Date must be a valid ISO 8601 date (YYYY-MM-DD)')
+        .optional()
+        .isISO8601().withMessage('Date must be in YYYY-MM-DD format')
+        .toDate(),
     ],
     validate,
     logDonationForVerification

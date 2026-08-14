@@ -39,8 +39,17 @@ router.route('/admins')
     protect,
     authorize('superadmin'),
     [
-      body('name', 'Admin name is required').notEmpty(),
-      body('email', 'Provide a valid email address').isEmail(),
+      body('name', 'Admin name is required')
+        .notEmpty()
+        .isString()
+        .isLength({ max: 100 }).withMessage('Name must not exceed 100 characters')
+        .trim(),
+      body('email', 'Provide a valid email address')
+        .isEmail()
+        .normalizeEmail()
+        .isLength({ max: 254 }).withMessage('Email too long'),
+      body('password', 'Password must be between 8 and 128 characters')
+        .isLength({ min: 8, max: 128 }),
     ],
     validate,
     addAdmin

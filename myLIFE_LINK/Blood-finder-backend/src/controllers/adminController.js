@@ -244,7 +244,7 @@ exports.addAdmin = async (req, res, next) => {
     const admin = await User.create({
       name,
       email,
-      password: password || 'admin123',
+      password,          // Required — validated by route middleware (min 8 chars)
       phone: '0000000000',
       role: 'admin',
     });

@@ -81,12 +81,35 @@ exports.verifyOtp = async (req, res, next) => {
     const { email, otp } = req.body;
     const user = await User.findOne({ email });
 
-    // Allow demo OTP '1234' OR real generated OTP
-    const isOtpValid = otp === '1234' || (user && user.otp && user.otp === otp && user.otpExpire && user.otpExpire > Date.now());
+    // Per-account OTP attempt limit — max 5 wrong guesses before OTP is voided
+    const MAX_OTP_ATTEMPTS = 5;
 
-    if (!isOtpValid) {
+    // Check if OTP has expired or too many attempts already made
+    if (!user || !user.otp || !user.otpExpire || user.otpExpire <= Date.now()) {
       return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
     }
+
+    if (user.otpAttempts >= MAX_OTP_ATTEMPTS) {
+      // Void the OTP so a new one must be requested
+      user.otp = null;
+      user.otpExpire = null;
+      user.otpAttempts = 0;
+      await user.save({ validateBeforeSave: false });
+      return res.status(429).json({
+        success: false,
+        message: 'Too many incorrect OTP attempts. Please request a new OTP.',
+      });
+    }
+
+    if (user.otp !== otp) {
+      user.otpAttempts = (user.otpAttempts || 0) + 1;
+      await user.save({ validateBeforeSave: false });
+      return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
+    }
+
+    // Valid OTP — reset attempt counter but do NOT clear OTP yet (resetPassword needs it)
+    user.otpAttempts = 0;
+    await user.save({ validateBeforeSave: false });
 
     res.status(200).json({
       success: true,
@@ -202,7 +225,11 @@ exports.forgotPassword = async (req, res, next) => {
 
     const user = await User.findOne({ email });
     if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found with this email' });
+      // Return a generic response to prevent user enumeration
+      return res.status(200).json({
+        success: true,
+        message: 'If that email is registered, an OTP has been sent to it.',
+      });
     }
 
     // Generate 4-digit numeric OTP code
@@ -224,13 +251,17 @@ exports.forgotPassword = async (req, res, next) => {
 
       res.status(200).json({
         success: true,
-        message: `Password reset OTP code has been sent to ${user.email}.`,
+        message: 'If that email is registered, an OTP has been sent to it.',
       });
     } catch (emailErr) {
-      console.error('Failed to send email:', emailErr);
+      console.error('[Email] Failed to dispatch OTP email:', emailErr.message);
+      // Clear the OTP so user can retry the whole flow cleanly
+      user.otp = null;
+      user.otpExpire = null;
+      await user.save({ validateBeforeSave: false });
       return res.status(500).json({
         success: false,
-        message: 'Failed to send OTP email. Please verify SMTP credentials in .env file.',
+        message: 'Failed to send OTP. Please try again later.',
       });
     }
   } catch (error) {
@@ -249,17 +280,35 @@ exports.resetPassword = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Allow demo OTP '1234' OR real generated OTP
-    const isOtpValid = otp === '1234' || (user.otp && user.otp === otp && user.otpExpire && user.otpExpire > Date.now());
+    // Per-account attempt limit on reset-password as well
+    const MAX_OTP_ATTEMPTS = 5;
 
-    if (!isOtpValid) {
+    if (!user.otp || !user.otpExpire || user.otpExpire <= Date.now()) {
       return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
     }
 
-    // Hash & Update Password via pre('save') hook
+    if (user.otpAttempts >= MAX_OTP_ATTEMPTS) {
+      user.otp = null;
+      user.otpExpire = null;
+      user.otpAttempts = 0;
+      await user.save({ validateBeforeSave: false });
+      return res.status(429).json({
+        success: false,
+        message: 'Too many incorrect OTP attempts. Please request a new OTP.',
+      });
+    }
+
+    if (user.otp !== otp) {
+      user.otpAttempts = (user.otpAttempts || 0) + 1;
+      await user.save({ validateBeforeSave: false });
+      return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
+    }
+
+    // Valid OTP — Hash & Update Password via pre('save') hook
     user.password = password;
     user.otp = null;
     user.otpExpire = null;
+    user.otpAttempts = 0;
     await user.save();
 
     res.status(200).json({

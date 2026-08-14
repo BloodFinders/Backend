@@ -29,7 +29,8 @@ const protect = async (req, res, next) => {
 
       next();
     } catch (error) {
-      console.error('JWT verification error:', error);
+      // Log only the error type — never log the raw token or full error object
+      console.error('[Auth] JWT verification failed:', error.name);
       res.status(401).json({ success: false, message: 'Not authorized, token failed' });
     }
   }

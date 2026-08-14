@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
 
 // Load env vars
@@ -33,6 +32,9 @@ const adminRoutes = require('./routes/adminRoutes');
 
 // Error Handler Middleware
 const errorHandler = require('./middleware/errorHandler');
+
+// Rate Limiters
+const { generalLimiter } = require('./middleware/rateLimiter');
 
 const app = express();
 
@@ -69,16 +71,8 @@ if (process.env.NODE_ENV !== 'production') {
   app.use(morgan('dev'));
 }
 
-// Rate limiting (15 minutes, max 500 requests for development)
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 mins
-  max: 500,
-  message: {
-    success: false,
-    message: 'Too many requests from this IP, please try again after 15 minutes',
-  },
-});
-app.use('/api', limiter);
+// General rate limiting — thresholds are env-configurable (see .env.example)
+app.use('/api', generalLimiter);
 
 // Mount routers
 app.use('/api/auth', authRoutes);
@@ -90,11 +84,11 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/blood-stock', bloodStockRoutes);
 app.use('/api/admin', adminRoutes);
 
-// Fallback 404 Route
-app.use((req, res, next) => {
+// Fallback 404 Route — do not leak raw URL/method to client
+app.use((req, res) => {
   res.status(404).json({
     success: false,
-    message: `Route not found: ${req.method} ${req.originalUrl}`,
+    message: 'The requested resource was not found.',
   });
 });
 
