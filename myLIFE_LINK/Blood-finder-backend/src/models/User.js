@@ -60,6 +60,10 @@ const UserSchema = new mongoose.Schema({
     enum: ['Active', 'Inactive'],
     default: 'Active',
   },
+  isVerified: {
+    type: Boolean,
+    default: false,
+  },
   photo: {
     type: String,
     default: null,
@@ -75,6 +79,10 @@ const UserSchema = new mongoose.Schema({
   otpAttempts: {
     type: Number,
     default: 0,
+  },
+  lastOtpSentAt: {
+    type: Date,
+    default: null,
   },
   failedLoginAttempts: {
     type: Number,

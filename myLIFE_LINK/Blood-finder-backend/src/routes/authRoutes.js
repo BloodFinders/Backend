@@ -1,7 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const {
-  register, verifyOtp, login, refresh, forgotPassword, resetPassword, getMe, updateProfile,
+  register, verifyOtp, resendOtp, login, refresh, forgotPassword, resetPassword, getMe, updateProfile,
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 const { authStrictLimiter, otpLimiter } = require('../middleware/rateLimiter');
@@ -36,9 +36,9 @@ router.post(
       .isLength({ max: 254 }).withMessage('Email must not exceed 254 characters'),
     body('phone', 'Phone must be exactly 10 digits')
       .matches(/^[0-9]{10}$/),
-    body('password', 'Password must be at least 8 characters')
-      .isLength({ min: 8, max: 128 })
-      .withMessage('Password must be between 8 and 128 characters'),
+    body('password', 'Password must be at least 6 characters')
+      .isLength({ min: 6, max: 128 })
+      .withMessage('Password must be between 6 and 128 characters'),
     body('bloodGroup', 'Invalid blood group')
       .optional()
       .isIn(BLOOD_GROUPS).withMessage(`Blood group must be one of: ${BLOOD_GROUPS.join(', ')}`),
@@ -56,15 +56,34 @@ router.post(
   '/verify-otp',
   otpLimiter,
   [
-    body('email', 'Please provide a valid email')
-      .isEmail()
-      .normalizeEmail(),
-    body('otp', 'OTP must be exactly 4 digits')
-      .isLength({ min: 4, max: 4 })
-      .matches(/^[0-9]{4}$/).withMessage('OTP must contain only digits'),
+    body().custom((value, { req }) => {
+      if (!req.body.phone && !req.body.email) {
+        throw new Error('Phone number or email is required');
+      }
+      return true;
+    }),
+    body('otp', 'OTP must be 6 digits')
+      .isLength({ min: 4, max: 6 })
+      .matches(/^[0-9]{4,6}$/).withMessage('OTP must contain only 4-6 digits'),
   ],
   validate,
   verifyOtp
+);
+
+// ── POST /resend-otp ───────────────────────────────────────────────────────
+router.post(
+  '/resend-otp',
+  otpLimiter,
+  [
+    body().custom((value, { req }) => {
+      if (!req.body.phone && !req.body.email) {
+        throw new Error('Phone number or email is required');
+      }
+      return true;
+    }),
+  ],
+  validate,
+  resendOtp
 );
 
 // ── POST /login ────────────────────────────────────────────────────────────
@@ -102,10 +121,9 @@ router.post(
   '/forgot-password',
   authStrictLimiter,
   [
-    body('email', 'Please provide a valid email')
-      .isEmail()
-      .normalizeEmail()
-      .isLength({ max: 254 }).withMessage('Email too long'),
+    body('email', 'Please provide a valid email or phone number')
+      .notEmpty()
+      .isLength({ max: 254 }).withMessage('Identifier too long'),
   ],
   validate,
   forgotPassword
@@ -116,14 +134,13 @@ router.post(
   '/reset-password',
   otpLimiter,
   [
-    body('email', 'Please provide a valid email')
-      .isEmail()
-      .normalizeEmail(),
-    body('password', 'Password must be between 8 and 128 characters')
-      .isLength({ min: 8, max: 128 }),
-    body('otp', 'OTP must be exactly 4 digits')
-      .isLength({ min: 4, max: 4 })
-      .matches(/^[0-9]{4}$/).withMessage('OTP must contain only digits'),
+    body('email', 'Email or phone is required')
+      .notEmpty(),
+    body('password', 'Password must be between 6 and 128 characters')
+      .isLength({ min: 6, max: 128 }),
+    body('otp', 'OTP must be 4-6 digits')
+      .isLength({ min: 4, max: 6 })
+      .matches(/^[0-9]{4,6}$/).withMessage('OTP must contain only digits'),
   ],
   validate,
   resetPassword

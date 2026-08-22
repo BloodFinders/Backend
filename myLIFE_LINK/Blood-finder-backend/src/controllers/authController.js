@@ -3,9 +3,10 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const Reward = require('../models/Reward');
 const sendEmail = require('../utils/sendEmail');
+const sendSms = require('../utils/sendSms');
 
-// Hash a token with SHA-256 (for safe DB storage)
-const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+// Hash a token or OTP with SHA-256 (for safe DB storage)
+const hashToken = (token) => crypto.createHash('sha256').update(String(token)).digest('hex');
 
 // Generate JWT Access Token (Short-lived: 15 minutes)
 const generateToken = (id) => {
@@ -21,76 +22,142 @@ const generateRefreshToken = (id) => {
   });
 };
 
-// @desc    Register user
+// @desc    Register user & Send SMS OTP
 // @route   POST /api/auth/register
 // @access  Public
 exports.register = async (req, res, next) => {
   try {
     const { fullName, email, phone, password, city, bloodGroup } = req.body;
+    const normalizedEmail = email ? email.toLowerCase().trim() : '';
+    const cleanedPhone = phone ? phone.trim() : '';
 
-    // Check if user already exists
-    const userExists = await User.findOne({ email });
-    if (userExists) {
-      return res.status(400).json({ success: false, message: 'User already exists' });
+    // Check if user already exists with email or phone
+    const existingUser = await User.findOne({
+      $or: [
+        { email: normalizedEmail },
+        { phone: cleanedPhone },
+      ],
+    }).select('+password');
+
+    if (existingUser && existingUser.isVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'An account with this email or phone number already exists. Please login.',
+      });
     }
 
-    // Create user
-    const user = await User.create({
-      name: fullName,
-      email,
-      phone,
-      password,
-      city,
-      bloodGroup,
-      role: 'user', // Default role
-    });
+    // Generate cryptographically secure 6-digit OTP
+    const rawOtp = crypto.randomInt(100000, 999999).toString();
+    const hashedOtp = hashToken(rawOtp);
+    const otpExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    // Initialize Rewards schema for this user
-    await Reward.create({
-      userId: user._id,
-      badges: [
-        { badgeId: 'r1', title: 'First Donation', earned: false },
-        { badgeId: 'r2', title: '5 Donations', earned: false },
-        { badgeId: 'r3', title: '10 Donations', earned: false },
-        { badgeId: 'r4', title: '25 Donations', earned: false },
-        { badgeId: 'r5', title: '50 Donations', earned: false },
-        { badgeId: 'r6', title: 'Life Saver', earned: false },
-        { badgeId: 'r7', title: 'Hero Donor', earned: false },
-        { badgeId: 'r8', title: 'Platinum Donor', earned: false },
-      ],
-      timeline: [],
+    let user;
+    if (existingUser && !existingUser.isVerified) {
+      // Update unverified user record with new details and refresh OTP
+      existingUser.name = fullName;
+      existingUser.email = normalizedEmail;
+      existingUser.phone = cleanedPhone;
+      existingUser.password = password; // Triggers pre('save') bcrypt hashing
+      existingUser.city = city || existingUser.city;
+      existingUser.bloodGroup = bloodGroup || existingUser.bloodGroup;
+      existingUser.otp = hashedOtp;
+      existingUser.otpExpire = otpExpire;
+      existingUser.otpAttempts = 0;
+      existingUser.lastOtpSentAt = new Date();
+      await existingUser.save();
+      user = existingUser;
+    } else {
+      // Create new unverified user
+      user = await User.create({
+        name: fullName,
+        email: normalizedEmail,
+        phone: cleanedPhone,
+        password,
+        city,
+        bloodGroup,
+        role: 'user',
+        isVerified: false,
+        otp: hashedOtp,
+        otpExpire,
+        otpAttempts: 0,
+        lastOtpSentAt: new Date(),
+      });
+
+      // Initialize Rewards schema for this user
+      await Reward.create({
+        userId: user._id,
+        badges: [
+          { badgeId: 'r1', title: 'First Donation', earned: false },
+          { badgeId: 'r2', title: '5 Donations', earned: false },
+          { badgeId: 'r3', title: '10 Donations', earned: false },
+          { badgeId: 'r4', title: '25 Donations', earned: false },
+          { badgeId: 'r5', title: '50 Donations', earned: false },
+          { badgeId: 'r6', title: 'Life Saver', earned: false },
+          { badgeId: 'r7', title: 'Hero Donor', earned: false },
+          { badgeId: 'r8', title: 'Platinum Donor', earned: false },
+        ],
+        timeline: [],
+      });
+    }
+
+    // Dispatch SMS OTP via Twilio / Simulator
+    await sendSms({
+      to: user.phone,
+      otp: rawOtp,
+      message: `[RakthaDan] Your verification OTP is: ${rawOtp}. Valid for 10 minutes. Do not share this code.`,
     });
 
     res.status(201).json({
       success: true,
-      message: 'Registration successful. OTP sent to your email.',
+      message: 'Registration initiated. A 6-digit verification OTP has been sent to your phone number.',
+      phone: user.phone,
+      email: user.email,
     });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Verify OTP
-// @route   POST /api/auth/verify-otp
-// @access  Public
-// @desc    Verify OTP
+// @desc    Verify OTP for Registration & Login Activation
 // @route   POST /api/auth/verify-otp
 // @access  Public
 exports.verifyOtp = async (req, res, next) => {
   try {
-    const { email, otp } = req.body;
-    const user = await User.findOne({ email });
+    const { email, phone, otp } = req.body;
+    const identifier = (phone || email || '').trim();
 
-    // Per-account OTP attempt limit — max 5 wrong guesses before OTP is voided
-    const MAX_OTP_ATTEMPTS = 5;
-
-    // Check if OTP has expired or too many attempts already made
-    if (!user || !user.otp || !user.otpExpire || user.otpExpire <= Date.now()) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
+    if (!identifier) {
+      return res.status(400).json({ success: false, message: 'Phone number or email is required.' });
+    }
+    if (!otp) {
+      return res.status(400).json({ success: false, message: 'OTP is required.' });
     }
 
+    const cleanedDigits = identifier.replace(/[^0-9]/g, '');
+    const user = await User.findOne({
+      $or: [
+        { phone: identifier },
+        { phone: cleanedDigits },
+        { email: identifier.toLowerCase() },
+      ],
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User account not found.' });
+    }
+
+    const MAX_OTP_ATTEMPTS = 5;
+
+    // Check if OTP is present and not expired
+    if (!user.otp || !user.otpExpire || new Date(user.otpExpire).getTime() <= Date.now()) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired or is invalid. Please request a new OTP.',
+      });
+    }
+
+    // Check attempt lockout
     if (user.otpAttempts >= MAX_OTP_ATTEMPTS) {
-      // Void the OTP so a new one must be requested
       user.otp = null;
       user.otpExpire = null;
       user.otpAttempts = 0;
@@ -101,19 +168,125 @@ exports.verifyOtp = async (req, res, next) => {
       });
     }
 
-    if (user.otp !== otp) {
+    // Compare entered OTP with hashed OTP or raw
+    const enteredOtpStr = String(otp).trim();
+    const hashedEnteredOtp = hashToken(enteredOtpStr);
+    const isMatch = (user.otp === hashedEnteredOtp) || (user.otp === enteredOtpStr);
+
+    if (!isMatch) {
       user.otpAttempts = (user.otpAttempts || 0) + 1;
+      const attemptsRemaining = MAX_OTP_ATTEMPTS - user.otpAttempts;
       await user.save({ validateBeforeSave: false });
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
+      return res.status(400).json({
+        success: false,
+        message: `Invalid OTP code. ${attemptsRemaining > 0 ? `${attemptsRemaining} attempt(s) remaining.` : 'Please request a new OTP.'}`,
+      });
     }
 
-    // Valid OTP — reset attempt counter but do NOT clear OTP yet (resetPassword needs it)
+    // OTP Verified Successfully -> Activate user
+    user.isVerified = true;
+    user.otp = null;
+    user.otpExpire = null;
     user.otpAttempts = 0;
+
+    const accessToken = generateToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+    user.refreshToken = hashToken(refreshToken);
+
     await user.save({ validateBeforeSave: false });
 
     res.status(200).json({
       success: true,
-      message: 'OTP verified successfully.',
+      message: 'Account verified successfully! Welcome to RakthaDan.',
+      token: accessToken,
+      refreshToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        mobile: user.phone,
+        gender: user.gender,
+        dob: user.dob,
+        address: user.address,
+        city: user.city,
+        bloodGroup: user.bloodGroup,
+        role: user.role,
+        photo: user.photo,
+        isDonor: user.isDonor,
+        donorAvailable: user.donorAvailable,
+        isVerified: user.isVerified,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Resend OTP to User Phone
+// @route   POST /api/auth/resend-otp
+// @access  Public
+exports.resendOtp = async (req, res, next) => {
+  try {
+    const { email, phone } = req.body;
+    const identifier = (phone || email || '').trim();
+
+    if (!identifier) {
+      return res.status(400).json({ success: false, message: 'Phone number or email is required.' });
+    }
+
+    const cleanedDigits = identifier.replace(/[^0-9]/g, '');
+    const user = await User.findOne({
+      $or: [
+        { phone: identifier },
+        { phone: cleanedDigits },
+        { email: identifier.toLowerCase() },
+      ],
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User account not found.' });
+    }
+
+    if (user.isVerified && !user.otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Account is already verified. Please login.',
+      });
+    }
+
+    // Rate Limiting Cooldown Check (60 seconds)
+    const COOLDOWN_MS = 60 * 1000;
+    if (user.lastOtpSentAt) {
+      const timeSinceLastSent = Date.now() - new Date(user.lastOtpSentAt).getTime();
+      if (timeSinceLastSent < COOLDOWN_MS) {
+        const secondsRemaining = Math.ceil((COOLDOWN_MS - timeSinceLastSent) / 1000);
+        return res.status(429).json({
+          success: false,
+          message: `Please wait ${secondsRemaining}s before requesting a new OTP.`,
+          secondsRemaining,
+        });
+      }
+    }
+
+    // Generate new 6-digit OTP
+    const rawOtp = crypto.randomInt(100000, 999999).toString();
+    user.otp = hashToken(rawOtp);
+    user.otpExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+    user.otpAttempts = 0;
+    user.lastOtpSentAt = new Date();
+    await user.save({ validateBeforeSave: false });
+
+    // Send SMS via Twilio / Simulator
+    await sendSms({
+      to: user.phone,
+      otp: rawOtp,
+      message: `[RakthaDan] Your new verification OTP is: ${rawOtp}. Valid for 10 minutes.`,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'A fresh 6-digit OTP has been sent to your phone number.',
+      phone: user.phone,
     });
   } catch (error) {
     next(error);
@@ -129,12 +302,16 @@ exports.login = async (req, res, next) => {
 
     // Support login with email OR phone number
     const identifier = email ? email.trim() : '';
+    const cleanedDigits = identifier.replace(/[^0-9]/g, '');
+
     const user = await User.findOne({
       $or: [
         { email: identifier.toLowerCase() },
         { phone: identifier },
+        { phone: cleanedDigits },
       ],
     }).select('+password');
+
     if (!user) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
@@ -168,6 +345,17 @@ exports.login = async (req, res, next) => {
 
       await user.save({ validateBeforeSave: false });
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+
+    // ── OTP Verification Enforcement ────────────────────────────────
+    if (user.isVerified === false) {
+      return res.status(403).json({
+        success: false,
+        message: 'Your account is not verified. Please verify your phone number with OTP to continue.',
+        isUnverified: true,
+        phone: user.phone,
+        email: user.email,
+      });
     }
 
     // ── Successful login: reset lockout counters ─────────────────────
@@ -205,13 +393,13 @@ exports.login = async (req, res, next) => {
         photo: user.photo,
         isDonor: user.isDonor,
         donorAvailable: user.donorAvailable,
+        isVerified: user.isVerified,
       },
     });
   } catch (error) {
     next(error);
   }
 };
-
 
 // @desc    Forgot Password
 // @route   POST /api/auth/forgot-password
@@ -220,50 +408,66 @@ exports.forgotPassword = async (req, res, next) => {
   try {
     const { email } = req.body;
     if (!email) {
-      return res.status(400).json({ success: false, message: 'Please provide an email address' });
+      return res.status(400).json({ success: false, message: 'Please provide an email or phone number' });
     }
 
-    const user = await User.findOne({ email });
+    const identifier = email.trim();
+    const cleanedDigits = identifier.replace(/[^0-9]/g, '');
+
+    const user = await User.findOne({
+      $or: [
+        { email: identifier.toLowerCase() },
+        { phone: identifier },
+        { phone: cleanedDigits },
+      ],
+    });
+
     if (!user) {
-      // Return a generic response to prevent user enumeration
       return res.status(200).json({
         success: true,
-        message: 'If that email is registered, an OTP has been sent to it.',
+        message: 'If that account is registered, a password reset OTP has been sent.',
       });
     }
 
-    // Generate 4-digit numeric OTP code
-    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    // Generate 6-digit numeric OTP code
+    const rawOtp = crypto.randomInt(100000, 999999).toString();
     const otpExpire = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
 
-    user.otp = otp;
+    user.otp = hashToken(rawOtp);
     user.otpExpire = otpExpire;
+    user.otpAttempts = 0;
+    user.lastOtpSentAt = new Date();
     await user.save({ validateBeforeSave: false });
 
-    // Send real email via Nodemailer
-    try {
-      await sendEmail({
-        email: user.email,
-        subject: 'RakthaDan - Password Reset OTP Code',
-        otp,
-        message: `Your OTP for resetting your RakthaDan account password is: ${otp}. It will expire in 10 minutes.`,
-      });
-
-      res.status(200).json({
-        success: true,
-        message: 'If that email is registered, an OTP has been sent to it.',
-      });
-    } catch (emailErr) {
-      console.error('[Email] Failed to dispatch OTP email:', emailErr.message);
-      // Clear the OTP so user can retry the whole flow cleanly
-      user.otp = null;
-      user.otpExpire = null;
-      await user.save({ validateBeforeSave: false });
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to send OTP. Please try again later.',
+    // Send SMS if phone is present
+    if (user.phone) {
+      await sendSms({
+        to: user.phone,
+        otp: rawOtp,
+        message: `[RakthaDan] Your password reset OTP is: ${rawOtp}. Valid for 10 minutes.`,
       });
     }
+
+    // Send email
+    if (user.email) {
+      try {
+        await sendEmail({
+          email: user.email,
+          subject: 'RakthaDan - Password Reset OTP Code',
+          otp: rawOtp,
+          message: `Your OTP for resetting your RakthaDan account password is: ${rawOtp}. It will expire in 10 minutes.`,
+        });
+      } catch (emailErr) {
+        console.error('[Email] Failed to dispatch OTP email:', emailErr.message);
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'If that account is registered, a password reset OTP has been sent.',
+      phone: user.phone,
+      email: user.email,
+    });
   } catch (error) {
     next(error);
   }
@@ -275,15 +479,24 @@ exports.forgotPassword = async (req, res, next) => {
 exports.resetPassword = async (req, res, next) => {
   try {
     const { email, password, otp } = req.body;
-    const user = await User.findOne({ email }).select('+password');
+    const identifier = (email || '').trim();
+    const cleanedDigits = identifier.replace(/[^0-9]/g, '');
+
+    const user = await User.findOne({
+      $or: [
+        { email: identifier.toLowerCase() },
+        { phone: identifier },
+        { phone: cleanedDigits },
+      ],
+    }).select('+password');
+
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // Per-account attempt limit on reset-password as well
     const MAX_OTP_ATTEMPTS = 5;
 
-    if (!user.otp || !user.otpExpire || user.otpExpire <= Date.now()) {
+    if (!user.otp || !user.otpExpire || new Date(user.otpExpire).getTime() <= Date.now()) {
       return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
     }
 
@@ -298,7 +511,11 @@ exports.resetPassword = async (req, res, next) => {
       });
     }
 
-    if (user.otp !== otp) {
+    const enteredOtpStr = String(otp).trim();
+    const hashedEnteredOtp = hashToken(enteredOtpStr);
+    const isMatch = (user.otp === hashedEnteredOtp) || (user.otp === enteredOtpStr);
+
+    if (!isMatch) {
       user.otpAttempts = (user.otpAttempts || 0) + 1;
       await user.save({ validateBeforeSave: false });
       return res.status(400).json({ success: false, message: 'Invalid or expired OTP code.' });
@@ -309,6 +526,7 @@ exports.resetPassword = async (req, res, next) => {
     user.otp = null;
     user.otpExpire = null;
     user.otpAttempts = 0;
+    user.isVerified = true;
     await user.save();
 
     res.status(200).json({
@@ -342,6 +560,7 @@ exports.getMe = async (req, res, next) => {
         photo: user.photo,
         isDonor: user.isDonor,
         donorAvailable: user.donorAvailable,
+        isVerified: user.isVerified,
       },
     });
   } catch (error) {
@@ -391,6 +610,7 @@ exports.updateProfile = async (req, res, next) => {
         photo: user.photo,
         isDonor: user.isDonor,
         donorAvailable: user.donorAvailable,
+        isVerified: user.isVerified,
       },
     });
   } catch (error) {
@@ -444,4 +664,3 @@ exports.refresh = async (req, res, next) => {
     next(error);
   }
 };
-

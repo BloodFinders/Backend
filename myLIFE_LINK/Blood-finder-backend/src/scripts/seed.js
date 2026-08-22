@@ -47,6 +47,7 @@ const seedDB = async () => {
       bloodGroup: 'O+',
       isDonor: true,
       donorAvailable: true,
+      isVerified: true,
     });
 
     // Create other donor users
@@ -63,6 +64,7 @@ const seedDB = async () => {
       bloodGroup: 'B+',
       isDonor: true,
       donorAvailable: true,
+      isVerified: true,
     });
 
     const anil = await User.create({
@@ -76,6 +78,7 @@ const seedDB = async () => {
       bloodGroup: 'O+',
       isDonor: true,
       donorAvailable: true,
+      isVerified: true,
     });
 
     const suresh = await User.create({
@@ -89,6 +92,7 @@ const seedDB = async () => {
       bloodGroup: 'A+',
       isDonor: true,
       donorAvailable: false,
+      isVerified: true,
     });
 
     const john = await User.create({
@@ -102,6 +106,7 @@ const seedDB = async () => {
       bloodGroup: 'AB+',
       isDonor: true,
       donorAvailable: true,
+      isVerified: true,
     });
 
     const neha = await User.create({
@@ -115,6 +120,7 @@ const seedDB = async () => {
       bloodGroup: 'B-',
       isDonor: true,
       donorAvailable: true,
+      isVerified: true,
     });
 
     // Create Admins
@@ -124,6 +130,7 @@ const seedDB = async () => {
       phone: '+91 9999900001',
       password: 'password123',
       role: 'admin',
+      isVerified: true,
     });
 
     const admin2 = await User.create({
@@ -132,6 +139,7 @@ const seedDB = async () => {
       phone: '+91 9999900002',
       password: 'password123',
       role: 'admin',
+      isVerified: true,
     });
 
     const admin3 = await User.create({
@@ -141,6 +149,7 @@ const seedDB = async () => {
       password: 'password123',
       role: 'admin',
       status: 'Inactive',
+      isVerified: true,
     });
 
     // Create Super Admin
@@ -150,6 +159,7 @@ const seedDB = async () => {
       phone: '+91 9999999999',
       password: 'password123',
       role: 'superadmin',
+      isVerified: true,
     });
 
     console.log('Users seeded.');
